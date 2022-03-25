@@ -1,4 +1,4 @@
-from src.BotEngine import BotEngine
+from app.BotEngine import BotEngine
 
 __help_text = '''
     Commonly asked questions:
@@ -11,7 +11,7 @@ __help_text = '''
     '''
 
 covid_bot = BotEngine(
-    model_path='universal-sentence-encoder-multilingual-qa_3',
+    model_path='model/universal-sentence-encoder-multilingual-qa_3',
     data_path='WHO_FAQ.xlsx',
     help_text=__help_text
 )
