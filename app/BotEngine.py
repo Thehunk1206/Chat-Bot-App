@@ -5,7 +5,6 @@ from typing import List
 import pandas as pd
 import tensorflow as tf
 import tensorflow_text as text
-import re
 import logging
 
 
@@ -19,6 +18,18 @@ logging.basicConfig(
             datefmt='%d-%b-%y %H:%M:%S'
         )
 
+'''
+The BotEngine class uses the Universal Sentence Encoder model to retrieve the most probable answer from given
+knowledge base(Answers and Context) to the user's question. Pass the tensorflow model path of SavedModel
+and knowledge base(Answers and Context) in CSV or Excel format as arguments to the class. The class has a method 
+called as ::get_response(question:str):: to retrieve the most probable answer to the questions passed as argument. 
+If the question asked is irrelevant to the knowledge base, the method returns _UNKNOWN_ANSWER_ as the answer.
+
+Tensrflow model format: SavedModel format
+Knowledge base format: CSV or Excel format. Should have two columns, one for Context(predifined Questions) and one for
+                        Corresponding Answers.
+'''
+
 class BotEngine(object):
     '''
     A class to initialize the model and get the functionalities to for building a chatbot 
@@ -29,6 +40,7 @@ class BotEngine(object):
         self,
         model_path: str,
         data_path: str,
+        preprocess_func: callable = None,
         help_text: str = '__help_text__',
         bot_prompt: str = 'BOT> ',
         user_prompt: str = 'YOU> ',
@@ -39,6 +51,7 @@ class BotEngine(object):
         args:
             model_path:str, path to the tf SavedModel folder
             data_path:str, path to the CSV/excel file containing the answers and context
+            preprocess_func:callable, function to preprocess the text with parameters as list of sentences.
             help_text:str, text to be displayed when the user enters 'help'
             bot_prompt:str, prompt for the bot
             user_prompt:str, prompt for the user
@@ -47,17 +60,18 @@ class BotEngine(object):
 
         self.model_path = model_path
         self.data_path = data_path
+        self.__preprocess_sentences = preprocess_func
+        self.similarity_threshold = similarity_threshold
         self.bot_prompt = bot_prompt
         self.user_prompt = user_prompt
-        self.response_encodings = None
         self.help_text = help_text
-        self.similarity_threshold = similarity_threshold
-        self._default_response = 'Sorry, I don\'t understand. Please try again.'    
+        self._UNKNOWN_ANSWER_ = 'Sorry, I don\'t understand. Could you ask questions related to Covid-19'    
         
         assert os.path.exists(self.data_path), 'The data file does not exist'
         assert os.path.exists(self.model_path), 'The model file does not exist'
         assert os.path.exists(self.model_path + '/saved_model.pb'), 'The model file does not exist'
         assert self.similarity_threshold > -1.0 and self.similarity_threshold < 1.0, 'The similarity threshold should be between -1.0 and 1.0'
+        assert callable(self.__preprocess_sentences), f'The preprocess function should be a callable fucntion. Got {type(self.__preprocess_sentences)}'
         
         # Read the file containing the answers and context. The file should be in CSV/Excel format
         self.data = self.__read_data(self.data_path)
@@ -65,6 +79,8 @@ class BotEngine(object):
         # Load the model
         self.model = self.__get_model(self.model_path)
 
+        # Generate the encodings for the answers and context
+        self.response_encodings = self.__generate_response_encodings(self.model, self.data['Answer'], self.data['Context'])
     
     def __read_data(self, data_path: str)-> pd.DataFrame:
         '''
@@ -75,7 +91,7 @@ class BotEngine(object):
             dataframe:pd.DataFrame, dataframe containing the data(answers and context)
         '''
         logging.info('Reading the data file...')
-        pd.set_option('max_colwidth', 100)
+        pd.set_option('max_colwidth', 200)
 
         if data_path.endswith('csv'):
             data = pd.read_csv(data_path)
@@ -104,17 +120,6 @@ class BotEngine(object):
             raise e
         return model
 
-    def __preprocess_sentences(self, input_sentences: List[str])-> List[str]:
-        '''
-        Preprocesses the input sentences to be compatible with the model.(The model has never seen covid-19 or covid before, so we replace it with coronavirus)
-        args:
-            input_sentences:list, list of sentences
-        returns:
-            preprocessed_sentences:list, list of preprocessed sentences
-        '''
-        return [re.sub(r'(covid-19|covid)', 'coronavirus', input_sentence, flags=re.I) 
-                for input_sentence in input_sentences]
-    
     def __generate_response_encodings(self, model, ans_text:List[str], context_text:List[str])-> tf.Tensor:
         '''
         The response_encoder signature is used to encode the answer test and context test. The output is a 512 dimensional vector.
@@ -146,7 +151,7 @@ class BotEngine(object):
             logging.error('Error generating response encodings - ' + str(e))
             raise e
         
-        self.response_encodings = response_encodings
+        return response_encodings
     
     def __get_question_encodings(self, model, question_text:List[str])-> tf.Tensor:
         '''
@@ -161,6 +166,7 @@ class BotEngine(object):
             question_text = [question_text]
 
         # Create question embeddings
+        logging.info(f'Question asked - {question_text}')
         logging.info('Generating question encodings...')
         
         try:
@@ -182,9 +188,6 @@ class BotEngine(object):
         returns:
             response:str, response for the question
         '''
-        # Get the response encodings
-        if self.response_encodings is None:
-            self.__generate_response_encodings(self.model, self.data['Answer'], self.data['Context'])
 
         question_encodings = self.__get_question_encodings(self.model, question)
         
@@ -203,7 +206,7 @@ class BotEngine(object):
         if tf.math.reduce_max(cosine_similarity) > self.similarity_threshold:
             return self.data.iloc[max_cosine_similarity_index]['Answer']
         else:
-            return f'{self._default_response}\n {self.help_text}'
+            return f'{self._UNKNOWN_ANSWER_}'
 
     def init_bot(self):
         while True:
